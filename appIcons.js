@@ -426,12 +426,38 @@ const DockAbstractAppIcon = GObject.registerClass({
         // it called by the parent constructor.
     }
 
+    _removeMenuTimeout(...args) {
+        // Compat shim for GNOME 49+ where upstream method was removed/renamed
+        try {
+            if (AppDisplay && AppDisplay.AppIcon && typeof AppDisplay.AppIcon.prototype._removeMenuTimeout === 'function') {
+                return AppDisplay.AppIcon.prototype._removeMenuTimeout.apply(this, args);
+            }
+        } catch (e) { /* ignore */ }
+
+        if (this._menuTimeoutId) {
+            if (typeof GLib !== 'undefined' && GLib.source_remove)
+                GLib.source_remove(this._menuTimeoutId);
+            else if (typeof Mainloop !== 'undefined' && Mainloop.source_remove)
+                Mainloop.source_remove(this._menuTimeoutId);
+            this._menuTimeoutId = 0;
+        }
+    }
+
     popupMenu() {
         this._removeMenuTimeout();
-        this.fake_release();
-        this._draggable.fakeRelease();
+        // GNOME 49: draggable API changed; guard old methods
 
-        if (!this._menu) {
+        if (typeof this.fake_release === 'function') {
+
+            this.fake_release();
+
+        }
+
+        if (this._draggable && typeof this._draggable.fakeRelease === 'function') {
+
+            this._draggable.fakeRelease();
+
+        }if (!this._menu) {
             this._menu = new DockAppIconMenu(this);
             this._menu.connect('activate-window', (menu, window) => {
                 if (window) {
