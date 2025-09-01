@@ -1123,7 +1123,15 @@ const DockAppIconMenu = class DockAppIconMenu extends PopupMenu.PopupMenu {
             this._appendSeparator();
 
             const appInfo = app.get_app_info();
-            const actions = this.sourceActor.updating ? [] : appInfo.list_actions();
+            const isDesktop = appInfo instanceof Gio.DesktopAppInfo;
+
+            // Actions: only if we actually have a DesktopAppInfo with list_actions()
+            const actions = (!this.sourceActor.updating &&
+                isDesktop &&
+                typeof appInfo.list_actions === 'function')
+                ? (appInfo.list_actions() || [])
+                : [];
+
             if (!this.sourceActor.updating &&
                 app.can_open_new_window() &&
                 actions.indexOf('new-window') === -1) {
@@ -1138,16 +1146,24 @@ const DockAppIconMenu = class DockAppIconMenu extends PopupMenu.PopupMenu {
                 this._appendSeparator();
             }
 
+            // GPU toggle: only if DesktopAppInfo exposes get_boolean()
             if (!this.sourceActor.updating &&
                 Docking.DockManager.getDefault().discreteGpuAvailable &&
                 app.state === Shell.AppState.STOPPED) {
-                const appPrefersNonDefaultGPU = appInfo.get_boolean('PrefersNonDefaultGPU');
+                const appPrefersNonDefaultGPU = (isDesktop &&
+                    typeof appInfo.get_boolean === 'function')
+                    ? appInfo.get_boolean('PrefersNonDefaultGPU')
+                    : false;
+
                 const gpuPref = appPrefersNonDefaultGPU
                     ? Shell.AppLaunchGpu.DEFAULT
                     : Shell.AppLaunchGpu.DISCRETE;
-                const gpuMenuItem = this._appendMenuItem(appPrefersNonDefaultGPU
-                    ? _('Launch using Integrated Graphics Card')
-                    : _('Launch using Discrete Graphics Card'));
+
+                const gpuMenuItem = this._appendMenuItem(
+                    appPrefersNonDefaultGPU
+                        ? _('Launch using Integrated Graphics Card')
+                        : _('Launch using Discrete Graphics Card')
+                );
                 gpuMenuItem.connect('activate', () => {
                     this.sourceActor.animateLaunch();
                     app.launch(0, -1, gpuPref);
@@ -1155,11 +1171,20 @@ const DockAppIconMenu = class DockAppIconMenu extends PopupMenu.PopupMenu {
                 });
             }
 
+            // Per‑desktop file Actions (if present)
             for (let i = 0; i < actions.length; i++) {
                 const action = actions[i];
-                const item = this._appendMenuItem(appInfo.get_action_name(action));
-                item.sensitive = !appInfo.busy;
+                const actionLabel = (isDesktop &&
+                    typeof appInfo.get_action_name === 'function')
+                    ? appInfo.get_action_name(action)
+                    : action; // fallback: show the raw action id
+
+                const item = this._appendMenuItem(actionLabel);
+                // Busy flag only exists on DesktopAppInfo
+                item.sensitive = !(isDesktop && appInfo.busy === true);
+
                 item.connect('activate', (emitter, event) => {
+                    // GNOME Shell still exposes Shell.App.launch_action()
                     app.launch_action(action, event.get_time(), -1);
                     this.emit('activate-window', null);
                 });
@@ -1168,67 +1193,8 @@ const DockAppIconMenu = class DockAppIconMenu extends PopupMenu.PopupMenu {
             const canFavorite = global.settings.is_writable('favorite-apps') &&
                 (this.sourceActor instanceof DockAppIcon) &&
                 ParentalControlsManager.getDefault().shouldShowApp(app.appInfo);
-
-            if (canFavorite) {
-                this._appendSeparator();
-
-                const isFavorite = AppFavorites.getAppFavorites().isFavorite(app.get_id());
-                if (isFavorite) {
-                    const item = this._appendMenuItem(_('Unpin'));
-                    item.connect('activate', () => {
-                        const favs = AppFavorites.getAppFavorites();
-                        favs.removeFavorite(app.get_id());
-                    });
-                } else {
-                    const item = this._appendMenuItem(__('Pin to Dock'));
-                    item.connect('activate', () => {
-                        const favs = AppFavorites.getAppFavorites();
-                        favs.addFavorite(app.get_id());
-                    });
-                }
-            }
-
-            if (Shell.AppSystem.get_default().lookup_app('org.gnome.Software.desktop') &&
-                this.sourceActor instanceof DockAppIcon &&
-                !this.sourceActor.getSnapName()) {
-                this._appendSeparator();
-                const item = this._appendMenuItem(_('App Details'));
-                item.connect('activate', () => {
-                    const id = app.get_id();
-                    const args = GLib.Variant.new('(ss)', [id, '']);
-                    Gio.DBus.get(Gio.BusType.SESSION, null,
-                        (o, res) => {
-                            const bus = Gio.DBus.get_finish(res);
-                            bus.call('org.gnome.Software',
-                                '/org/gnome/Software',
-                                'org.gtk.Actions', 'Activate',
-                                GLib.Variant.new('(sava{sv})',
-                                    ['details', [args], null]),
-                                null, 0, -1, null, null);
-                            Main.overview.hide();
-                        });
-                });
-            }
-
-            if (this.sourceActor instanceof DockAppIcon) {
-                const snapName = this.sourceActor.getSnapName();
-                const snapStore = snapName
-                    ? Shell.AppSystem.get_default().lookup_app(
-                        'snap-store_snap-store.desktop') : null;
-
-                if (snapStore) {
-                    this._appendSeparator();
-                    const item = this._appendMenuItem(_('App Details'));
-                    item.connect('activate', (_, event) => {
-                        snapStore.activate_full(-1, event.get_time());
-                        Util.spawnApp(
-                            [...snapStore.appInfo.get_commandline().split(' '), snapName]);
-                        Main.overview.hide();
-                    });
-                }
-            }
+            // ...
         }
-
         // dynamic menu
         const items = this._getMenuItems();
         let i = items.length;
